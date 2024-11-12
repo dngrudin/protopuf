@@ -16,6 +16,9 @@
 #include <protopuf/message.h>
 #include <message.pb.h>
 #include <array>
+#include <type_traits>
+
+#include "test_fixture.h"
 
 using namespace pp;
 using namespace std;
@@ -23,12 +26,18 @@ using namespace std;
 using Student = message<uint32_field<"id", 1>, string_field<"name", 3>>;
 using Class = message<string_field<"name", 8>, message_field<"students", 3, Student, repeated>>;
 
-GTEST_TEST(compatibility, encode) {
+template<typename T>
+struct compatibility : test_fixture<T> {};
+TYPED_TEST_SUITE(compatibility, is_safe_types, test_name_generator);
+
+TYPED_TEST(compatibility, encode) {
     Student twice {123, "twice"}, tom{456, "tom"}, jerry{123456, "jerry"};
     Class myClass {"class 101", {tom, jerry, twice}};
 
     array<byte, 64> buffer{};
-    message_coder<Class>::encode(myClass, buffer);
+    bytes b;
+    ASSERT_TRUE(get_value_from_result<TestFixture::is_safe>(
+        message_coder<Class>::encode<TestFixture::is_safe>(myClass, buffer), b));
 
     pb::Class yourClass;
     yourClass.ParseFromArray(buffer.data(), buffer.size());
@@ -43,7 +52,7 @@ GTEST_TEST(compatibility, encode) {
     EXPECT_EQ(yourClass.students(2).name(), "twice");
 }
 
-GTEST_TEST(compatibility, decode) {
+TYPED_TEST(compatibility, decode) {
     pb::Class yourClass;
     yourClass.set_name("class 101");
     pb::Student* tom = yourClass.add_students();
@@ -59,7 +68,11 @@ GTEST_TEST(compatibility, decode) {
     array<byte, 64> buffer{};
     yourClass.SerializeToArray(buffer.data(), buffer.size());
 
-    auto [myClass, _] = message_coder<Class>::decode(buffer);
+    decode_value<Class> value;
+    ASSERT_TRUE(get_value_from_result<TestFixture::is_safe>(
+        message_coder<Class>::decode<TestFixture::is_safe>(buffer), value));
+
+    const auto& [myClass, _] = value;
     EXPECT_EQ(myClass["name"_f], "class 101");
     EXPECT_EQ(myClass["students"_f][2]["name"_f], "twice");
     EXPECT_EQ(myClass["students"_f][2]["id"_f], 123);

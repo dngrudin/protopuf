@@ -44,33 +44,53 @@ namespace pp {
 
         array_coder() = delete;
 
-        static constexpr bytes encode(const R& con, bytes b) {
+        template<bool is_safe = false>
+        static constexpr encode_result<is_safe> encode(const R& con, bytes b) {
             uint<8> n = 0;
 
             for(const auto &i : con) {
                 n += skipper<C>::encode_skip(i);
             }
 
-            b = varint_coder<uint<8>>::encode(n, b);
+            bytes safe_b;
+            if (!get_value_from_result<is_safe>(varint_coder<uint<8>>::encode<is_safe>(n, b), safe_b)) {
+                return {};
+            }
 
             for(const auto& i : con) {
-                b = C::encode(i, b);
+                if (!get_value_from_result<is_safe>(C::template encode<is_safe>(i, safe_b), safe_b)) {
+                    return {};
+                }
             }
-
-            return b;
+            return encode_result<is_safe>{safe_b};
         }
 
-        static constexpr decode_result<R> decode(bytes b) {
-            uint<8> len = 0;
-            std::tie(len, b) = varint_coder<uint<8>>::decode(b);
-            R con;
-
-            auto origin_b = b;
-            while(begin_diff(b, origin_b) < len) {
-                std::tie(*std::inserter(con, con.end()), b) = C::decode(b);
+        template<bool is_safe = false>
+        static constexpr decode_result<R, is_safe> decode(bytes b) {
+            decode_value<uint<8>> decode_len;
+            if (!get_value_from_result<is_safe>(varint_coder<uint<8>>::decode<is_safe>(b), decode_len)) {
+                return {};
             }
 
-            return {con, b};
+            uint<8> len = 0;
+            std::tie(len, b) = decode_len;
+            R con;
+
+            if constexpr (requires { con.reserve(); }) {
+                con.reserve(len);
+            }
+
+            const auto origin_b = b;
+            decode_value<typename C::value_type> decode_v;
+            while(begin_diff(b, origin_b) < len) {
+                if (get_value_from_result<is_safe>(C::template decode<is_safe>(b), decode_v)) {
+                    std::tie(*std::inserter(con, con.end()), b) = std::move(decode_v);
+                } else {
+                    return {};
+                }
+            }
+
+            return make_decode_result<R, is_safe>(std::move(con), b);
         }
     };
 
@@ -91,11 +111,23 @@ namespace pp {
             return n;
         }
 
-        static constexpr bytes decode_skip(bytes b) {
-            uint<8> n = 0;
-            std::tie(n, b) = varint_coder<uint<8>>::decode(b);
+        template<bool is_safe = false>
+        static constexpr decode_skip_result<is_safe> decode_skip(bytes b) {
+            decode_value<uint<8>> decode_len;
+            if (!get_value_from_result<is_safe>(varint_coder<uint<8>>::decode<is_safe>(b), decode_len)) {
+                return {};
+            }
 
-            return b.subspan(n);
+            uint<8> n = 0;
+            std::tie(n, b) = decode_len;
+
+            if constexpr (is_safe) {
+                if (b.size() < n) {
+                    return {};
+                }
+            }
+
+            return make_decode_skip_result<is_safe>(b.subspan(n));
         }
     };
 

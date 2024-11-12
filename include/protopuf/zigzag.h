@@ -41,7 +41,7 @@ namespace pp {
         underlying_type v;
 
         constexpr static uint<N> from_sint(sint<N> in) {
-            return (in << 1) ^ (in >> (N * 8 - 1));
+            return static_cast<uint<N>>(in << 1) ^ static_cast<uint<N>>(in >> (N * 8 - 1));
         }
 
         constexpr static sint<N> to_sint(uint<N> in) {
@@ -121,13 +121,19 @@ namespace pp {
 
         integer_coder() = delete;
 
-        static constexpr bytes encode(T i, bytes bytes) {
-            return integer_coder<uint<N>>::encode(i.get_underlying(), bytes);
+        template<bool is_safe = false>
+        static constexpr encode_result<is_safe> encode(T i, bytes bytes) {
+            return integer_coder<uint<N>>::template encode<is_safe>(i.get_underlying(), bytes);
         }
 
-        static constexpr decode_result<T> decode(bytes bytes) {
-            auto p = integer_coder<uint<N>> ::decode(bytes);
-            return {T::from_uint(p.first), p.second};
+        template<bool is_safe = false>
+        static constexpr decode_result<T, is_safe> decode(bytes bytes) {
+            decode_value<uint<N>> decode_v;
+            if (get_value_from_result<is_safe>(integer_coder<uint<N>>::template decode<is_safe>(bytes), decode_v)) {
+                return make_decode_result<T, is_safe>(T::from_uint(decode_v.first), decode_v.second);
+            }
+            
+            return {};
         }
     };
 
@@ -141,13 +147,19 @@ namespace pp {
 
         varint_coder() = delete;
 
-        static constexpr bytes encode(T n, bytes s) {
-            return varint_coder<uint<N>>::encode(n.get_underlying(), s);
+        template<bool is_safe = false>
+        static constexpr encode_result<is_safe> encode(T n, bytes s) {
+            return varint_coder<uint<N>>::template encode<is_safe>(n.get_underlying(), s);
         }
 
-        static constexpr decode_result<T> decode(bytes s) {
-            auto p = varint_coder<uint<N>>::decode(s);
-            return {T::from_uint(p.first), p.second};
+        template<bool is_safe = false>
+        static constexpr decode_result<T, is_safe> decode(bytes s) {
+            decode_value<uint<N>> decode_v;
+            if (get_value_from_result<is_safe>(varint_coder<uint<N>>::template decode<is_safe>(s), decode_v)) {
+                return make_decode_result<T, is_safe>(T::from_uint(decode_v.first), decode_v.second);
+            }
+            
+            return {};
         }
     };
 }

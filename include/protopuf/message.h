@@ -18,6 +18,7 @@
 #include "coder.h"
 #include "field.h"
 #include "float.h"
+#include "byte.h"
 
 #include <unordered_map>
 #include <functional>
@@ -290,58 +291,88 @@ namespace pp {
     template <uint<1> N>
     using wire_skip = typename wire_skip_impl<N>::type;
 
-    template <uint<1>... I>
-    struct message_skip_map_impl : std::unordered_map<uint<4>, std::function<bytes(bytes)>> {
-        message_skip_map_impl() : std::unordered_map<uint<4>, std::function<bytes(bytes)>> {
+    template <bool is_safe, uint<1>... I>
+    struct message_skip_map_impl : std::unordered_map<uint<4>, std::function<decode_skip_result<is_safe>(bytes)>> {
+        message_skip_map_impl() : std::unordered_map<uint<4>, std::function<decode_skip_result<is_safe>(bytes)>> {
                 {I, [](bytes b){
-                    return wire_skip<I>::decode_skip(b);
+                    return wire_skip<I>::template decode_skip<is_safe>(b);
                 }}...
         } {}
     };
 
-    using message_skip_map = message_skip_map_impl<0, 1, 2, 5>;
-    inline const message_skip_map skip_map;
+    template <bool is_safe>
+    using message_skip_map = message_skip_map_impl<is_safe, 0, 1, 2, 5>;
+    template <bool is_safe>
+    inline const message_skip_map<is_safe> skip_map;
 
-    template <message_c>
+    template <bool is_safe>
+    using message_decode_map_result = std::conditional_t<is_safe, std::optional<std::pair<bytes, bool>>, std::pair<bytes, bool>>;
+
+    template <bool is_safe>
+    using message_decode_map_function_result = std::conditional_t<is_safe, std::optional<bytes>, bytes>;
+
+    template <bool, message_c>
     struct message_decode_map;
 
-    template <field_c... F>
-    struct message_decode_map<message<F...>> : std::unordered_map<uint<4>, std::function<bytes(message<F...>&, bytes)>> {
+    template <bool is_safe, field_c... F>
+    struct message_decode_map<is_safe, message<F...>> :
+        std::unordered_map<uint<4>, std::function<message_decode_map_function_result<is_safe>(message<F...>&, bytes)>> {
     private:
         using T = message<F...>;
+        using function_result = message_decode_map_function_result<is_safe>;
+
+        static constexpr message_decode_map_result<is_safe> make_result(bytes b, bool next) {
+            if constexpr (is_safe) {
+                return message_decode_map_result<is_safe>{std::in_place, b, next};
+            } else {
+                return message_decode_map_result<is_safe>{b, next};
+            }
+        }
 
     public:
-        message_decode_map() : std::unordered_map<uint<4>, std::function<bytes(T&, bytes)>> {
+        message_decode_map() : std::unordered_map<uint<4>, std::function<function_result(T&, bytes)>> {
                 {F::key, [](T& m, bytes b){
-                    auto [v, np] = F::coder::decode(b);
+                    decode_value<typename F::coder::value_type> decode_v;
+                    if (get_value_from_result<is_safe>(F::coder::template decode<is_safe>(b), decode_v)) {
+                        auto &f = m.template get<F::number>();
+                        push_field(f, std::move(decode_v.first));
 
-                    auto &f = m.template get<F::number>();
-                    push_field(f, std::move(v));
-
-                    return np;
+                        return function_result{decode_v.second};
+                    }
+                    return function_result{};
                 }}...
         } {}
 
-        constexpr std::pair<bytes, bool> decode(T& v, bytes b) const {
-            const auto &[n, nb] = varint_coder<uint<4>>::decode(b);
+        constexpr message_decode_map_result<is_safe> decode(T& v, bytes b) const {
+            decode_value<uint<4>> decode_v;
+            if (!get_value_from_result<is_safe>(varint_coder<uint<4>>::decode<is_safe>(b), decode_v)) {
+                return {};
+            }
+
+            const auto &[n, nb] = decode_v;
 
             if(to_field_number(n) == 0) {
-                return {b, false};
+                return make_result(b, false);
             }
 
-            auto iter = this->find(n);
+            const auto iter = this->find(n);
             if (iter != this->end()) {
-                b = iter->second(v, nb);
+                if (!get_value_from_result<is_safe>(iter->second(v, nb), b)) {
+                    return {};
+                }
             } else {
-                b = skip_map.at(to_wire_key(n))(nb);
+                if (!get_value_from_result<is_safe>(
+                        skip_map<is_safe>.at(to_wire_key(n))(nb), b)) {
+                    return {};
+                }
             }
 
-            return {b, true};
+            return make_result(b, true);
         }
     };
 
-    template <message_c T>
-    inline const message_decode_map<T> decode_map;
+    template <bool is_safe, message_c T>
+    inline const message_decode_map<is_safe, T> decode_map;
 
     /// A @ref coder for @ref message type
     template <message_c T>
@@ -350,38 +381,59 @@ namespace pp {
 
         message_coder() = delete;
 
-        static constexpr bytes encode(const T& msg, bytes b) {
-            msg.for_each([&b]<field_c F> (const F& f) {
+        template<bool is_safe = false>
+        static constexpr encode_result<is_safe> encode(const T& msg, bytes b) {
+            encode_result<is_safe> result{b};
+            msg.for_each([&result]<field_c F> (const F& f) {
                 if(empty_field(f)) {
                     return;
                 }
 
+                bytes safe_b;
+                if (!get_value_from_result<is_safe>(result, safe_b)) {
+                    return;
+                }
 
                 if constexpr (F::attr == singular) {
-                    b = varint_coder<uint<4>>::encode(F::key, b);
-                    b = F::coder::encode(f.value(), b);
+                    result = varint_coder<uint<4>>::encode<is_safe>(F::key, safe_b);
+                    if (get_value_from_result<is_safe>(result, safe_b)) {
+                        result = F::coder::template encode<is_safe>(f.value(), safe_b);
+                    }
                 } else {
                     for(const auto &i : f) {
-                        b = varint_coder<uint<4>>::encode(F::key, b);
-                        b = F::coder::encode(i, b);
+                        result = varint_coder<uint<4>>::encode<is_safe>(F::key, safe_b);
+                        if (get_value_from_result<is_safe>(result, safe_b)) {
+                            result = F::coder::template encode<is_safe>(i, safe_b);
+                            if (!get_value_from_result<is_safe>(result, safe_b)) {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
                     }
                 }
             });
 
-            return b;
+            return result;
         }
 
-        static constexpr decode_result<T> decode(bytes b) {
+        template<bool is_safe = false>
+        static constexpr decode_result<T, is_safe> decode(bytes b) {
             T v;
 
             while(b.end() > b.begin()) {
+                std::pair<bytes, bool> bytes_with_next;
+                if (!get_value_from_result<is_safe>(decode_map<is_safe, T>.decode(v, b), bytes_with_next)) {
+                    return {};
+                }
+
                 bool next = true;
-                std::tie(b, next) = decode_map<T>.decode(v, b);
+                std::tie(b, next) = bytes_with_next;
 
                 if(!next) break;
             }
 
-            return {v, b};
+            return make_decode_result<T, is_safe>(std::move(v), b);
         }
     };
 
@@ -421,30 +473,43 @@ namespace pp {
 
         embedded_message_coder() = delete;
 
-        static constexpr bytes encode(const T& msg, bytes b) {
+        template<bool is_safe = false>
+        static constexpr encode_result<is_safe> encode(const T& msg, bytes b) {
             auto n = skipper<message_coder<T>>::encode_skip(msg);
 
-            b = varint_coder<uint<8>>::encode(n, b);
-            b = message_coder<T>::encode(msg, b);
+            if (get_value_from_result<is_safe>(varint_coder<uint<8>>::encode<is_safe>(n, b), b)) {
+                return message_coder<T>::template encode<is_safe>(msg, b);
+            }
 
-            return b;
+            return {};
         }
 
-        static constexpr decode_result<T> decode(bytes b) {
+        template<bool is_safe = false>
+        static constexpr decode_result<T, is_safe> decode(bytes b) {
             T v;
 
-            std::size_t len = 0;
-            std::tie(len, b) = varint_coder<uint<8>>::decode(b);
+            decode_value<uint<8>> decod_len;
+            if (!get_value_from_result<is_safe>(varint_coder<uint<8>>::decode<is_safe>(b), decod_len)) {
+                return {};
+            }
 
-            auto origin_b = b;
+            std::size_t len = 0;
+            std::tie(len, b) = decod_len;
+
+            const auto origin_b = b;
             while(begin_diff(b, origin_b) < len) {
+                std::pair<bytes, bool> bytes_with_next;
+                if (!get_value_from_result<is_safe>(decode_map<is_safe, T>.decode(v, b), bytes_with_next)) {
+                    return {};
+                }
+
                 bool next = true;
-                std::tie(b, next) = decode_map<T>.decode(v, b);
+                std::tie(b, next) = bytes_with_next;
 
                 if(!next) break;
             }
 
-            return {v, b};
+            return make_decode_result<T, is_safe>(std::move(v), b);
         }
     };
 
@@ -460,11 +525,23 @@ namespace pp {
             return n;
         }
 
-        static constexpr bytes decode_skip(bytes b) {
-            uint<8> n = 0;
-            std::tie(n, b) = varint_coder<uint<8>>::decode(b);
+        template<bool is_safe = false>
+        static constexpr decode_skip_result<is_safe> decode_skip(bytes b) {
+            decode_value<uint<8>> decode_len;
+            if (!get_value_from_result<is_safe>(varint_coder<uint<8>>::decode<is_safe>(b), decode_len)) {
+                return {};
+            }
 
-            return b.subspan(n);
+            uint<8> n = 0;
+            std::tie(n, b) = decode_len;
+
+            if constexpr (is_safe) {
+                if (b.size() < n) {
+                    return {};
+                }
+            }
+
+            return make_decode_skip_result<is_safe>(b.subspan(n));
         }
     };
 

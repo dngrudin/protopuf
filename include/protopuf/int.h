@@ -197,13 +197,25 @@ namespace pp {
 
         static constexpr std::size_t N = sizeof(T);
 
-        static constexpr bytes encode(T i, bytes b) {
+        template<bool is_safe = false>
+        static constexpr encode_result<is_safe> encode(T i, bytes b) {
+            if constexpr (is_safe) {
+                if (b.size() < N) {
+                    return {};
+                }
+            }
             int_to_bytes<N>(i, b.subspan<0, N>());
-            return b.subspan<N>();
+            return encode_result<is_safe>{b.subspan<N>()};
         }
 
-        static constexpr decode_result<T> decode(bytes b) {
-            return {bytes_to_int<N>(b.subspan<0, N>()), b.subspan<N>()};
+        template<bool is_safe = false>
+        static constexpr decode_result<T, is_safe> decode(bytes b) {
+            if constexpr (is_safe) {
+                if (b.size() < N) {
+                    return {};
+                }
+            }
+            return make_decode_result<T, is_safe>(bytes_to_int<N>(b.subspan<0, N>()), b.subspan<N>());
         }
     };
 
@@ -214,12 +226,14 @@ namespace pp {
 
         integer_coder() = delete;
 
-        static constexpr bytes encode(T i, bytes b) {
-            return integer_coder<std::make_unsigned_t<T>>::encode(i, b);
+        template<bool is_safe = false>
+        static constexpr encode_result<is_safe> encode(T i, bytes b) {
+            return integer_coder<std::make_unsigned_t<T>>::template encode<is_safe>(i, b);
         }
 
-        static constexpr decode_result<T> decode(bytes b) {
-            return integer_coder<std::make_unsigned_t<T>>::decode(b);
+        template<bool is_safe = false>
+        static constexpr decode_result<T, is_safe> decode(bytes b) {
+            return integer_coder<std::make_unsigned_t<T>>::template decode<is_safe>(b);
         }
     };
 

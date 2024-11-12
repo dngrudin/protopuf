@@ -27,12 +27,14 @@ namespace pp {
 
         bool_coder() = delete;
 
-        static constexpr bytes encode(bool i, bytes b) {
-            return integer_coder<uint<1>>::encode(i, b);
+        template<bool is_safe = false>
+        static constexpr encode_result<is_safe> encode(bool i, bytes b) {
+            return integer_coder<uint<1>>::encode<is_safe>(i, b);
         }
 
-        static constexpr decode_result<bool> decode(bytes b) {
-            return integer_coder<uint<1>>::decode(b);
+        template<bool is_safe = false>
+        static constexpr decode_result<bool, is_safe> decode(bytes b) {
+            return integer_coder<uint<1>>::decode<is_safe>(b);
         }
     };
 

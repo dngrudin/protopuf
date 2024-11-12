@@ -43,30 +43,54 @@ namespace pp {
 
         varint_coder() = delete;
 
-        static constexpr bytes encode(T n, bytes s) {
+        template<bool is_safe = false>
+        static constexpr encode_result<is_safe> encode(T n, bytes s) {
             auto iter = s.begin();
+            [[maybe_unused]] const auto end = s.end();
+
             do {
+                if constexpr (is_safe) {
+                    if (iter == end) {
+                        return {};
+                    }
+                }
+
                 *iter = 0b1000'0000_b | std::byte(n);
                 n >>= 7, ++iter;
             } while(n != 0);
 
             *(iter - 1) &= 0b0111'1111_b;
 
-            return {iter, s.end()};
+            return make_encode_result<is_safe>(iter, s.end());
         }
 
-        static constexpr decode_result<T> decode(bytes s) {
+        template<bool is_safe = false>
+        static constexpr decode_result<T, is_safe> decode(bytes s) {
             T n = 0;
 
             auto iter = s.begin();
+            [[maybe_unused]] const auto end = s.end();
+
+            if constexpr (is_safe) {
+                if (iter == end) {
+                    return {};
+                }
+            }
+
             std::size_t i = 0;
             while((*iter >> 7) == 1_b) {
-                n |= static_cast<T>(*iter & 0b0111'1111_b) << 7*i;
+                n |= static_cast<T>(static_cast<T>(*iter & 0b0111'1111_b) << 7*i);
                 ++iter, ++i;
-            }
-            n |= static_cast<T>(*iter++) << 7 * i;
 
-            return {n, {iter, s.end()}};
+                if constexpr (is_safe) {
+                    if (iter == end) {
+                        return {};
+                    }
+                }
+            }
+            n |= static_cast<T>(static_cast<T>(*iter++) << 7 * i);
+
+            return make_decode_result<T, is_safe>(std::move(n), bytes{iter, s.end()});
         }
     };
 
@@ -77,12 +101,14 @@ namespace pp {
 
         varint_coder() = delete;
 
-        static constexpr bytes encode(T n, bytes s) {
-            return varint_coder<std::make_unsigned_t<T>>::encode(n, s);
+        template<bool is_safe = false>
+        static constexpr encode_result<is_safe> encode(T n, bytes s) {
+            return varint_coder<std::make_unsigned_t<T>>::template encode<is_safe>(n, s);
         }
 
-        static constexpr decode_result<T> decode(bytes s) {
-            return varint_coder<std::make_unsigned_t<T>>::decode(s);
+        template<bool is_safe = false>
+        static constexpr decode_result<T, is_safe> decode(bytes s) {
+            return varint_coder<std::make_unsigned_t<T>>::template decode<is_safe>(s);
         }
     };
 
